@@ -1,6 +1,9 @@
 
 import appdaemon.plugins.hass.hassapi as hass
 
+BRIGHTNESS_DIRECTION_DOWN = "down"
+BRIGHTNESS_DIRECTION_UP = "up"
+BRIGHTNESS_TRANSITION_TIME = 25
 BUTTON_PRESS = 0
 BUTTON_CLICK = 2
 BUTTON_LONG_PRESS = 1
@@ -8,12 +11,13 @@ BUTTON_LONG_RELEASE = 3
 BUTTON_DOUBLE_CLICK = 4
 BUTTON_TRIPPLE_CLICK = 5
 
-class RemoteControl(hass.Hass):
+class SwitchControl(hass.Hass):
 
     def initialize(self):
-        self.remote = self.args.get('remote')
-        self.click = self.args.get('click', dict())
-        self.hold_to_dim = self.args.get('hold_to_dim', dict())
+        self.device = self.args.get('device')
+
+        self.click = self.buttons_from_argument('click')
+        self.hold_to_dim = self.buttons_from_argument('hold_to_dim')
 
         self.last_brightness_direction = {}
         self.listen_event(self.handle_event, 'deconz_event')
@@ -23,15 +27,15 @@ class RemoteControl(hass.Hass):
 
         Keeps counters for button presses and resets counters on inactivity.
         """
-        remote_id = data['id']
+        device_id = data['id']
         button_event = data['event']
 
-        if remote_id == self.remote:
+        if device_id == self.device:
+            #self.log("handle event: {}".format(data))
             self.handle_button_event(button_event)
 
     def handle_button_event(self, button_event):
         """Handle the button event and forward to the action method."""
-
         #self.log("handle button event: {}".format(button_event))
         button_action = button_event % 1000
         button_id = int((button_event - button_action) / 1000)
@@ -49,6 +53,40 @@ class RemoteControl(hass.Hass):
         elif button_action == BUTTON_TRIPPLE_CLICK:
             self.handle_button_double_click(button_id)
 
+    def buttons_from_argument(self, argument):
+        """Return a button dictionary from teh given argument."""
+        dictionary = self.args.get(argument, dict())
+        result = dict()
+        for key, value in dictionary.items():
+            result[self.remap_button_id(key)] = value
+
+        return result
+
+    def remap_button_id(self, button_id):
+        """Return a remapped button id for the given button id."""
+        return button_id
+
+    def safe_click_entites(self, button_id):
+        """Safely return the click entities for the given button id.
+
+        If no entities are defined for the button id an empty list is returned.
+        """
+        if button_id in self.click:
+            return self.click[button_id]
+        else:
+            return []
+
+    def safe_hold_to_dim_entities(self, button_id):
+        """Safely return the hold to dim entities for the given button id.
+
+        If no entities are defined for the button id an empty list is returned.
+        """
+        if button_id in self.hold_to_dim:
+            return self.hold_to_dim[button_id]
+        else:
+            return []
+
+
 ### Toggle on/off state ###
 
     def toggle_entities(self, list_of_entities):
@@ -65,14 +103,28 @@ class RemoteControl(hass.Hass):
                     self.log("turn_on {}".format(entity))
                     self.call_service('homeassistant/turn_on', entity_id=entity)
 
+    def turn_off_entities(self, list_of_entities):
+        """Turn the specified entities off."""
+        if list_of_entities != None and len(list_of_entities) > 0:
+            for entity in list_of_entities:
+                self.log("turn_off {}".format(entity))
+                self.call_service('homeassistant/turn_off', entity_id=entity)
+
+    def turn_on_entities(self, list_of_entities):
+        """Turn the specified entities on."""
+        if list_of_entities != None and len(list_of_entities) > 0:
+            for entity in list_of_entities:
+                self.log("turn_on {}".format(entity))
+                self.call_service('homeassistant/turn_on', entity_id=entity)
+
 ### Control brightness ###
 
     def brightness_change(self, direction, list_of_entities):
         """Change the brightness either up or down for the specified light entities."""
         if list_of_entities != None and len(list_of_entities) > 0:
 
-            transition_time = 25 #35
-            if direction == "up":
+            transition_time = BRIGHTNESS_TRANSITION_TIME
+            if direction == BRIGHTNESS_DIRECTION_UP:
                 bri_inc = 254
             else:
                 bri_inc = -254
@@ -98,12 +150,26 @@ class RemoteControl(hass.Hass):
             last_direction = None 
 
         if last_direction is None:
-            last_direction = "down"
+            last_direction = BRIGHTNESS_DIRECTION_DOWN
 
         self.brightness_change(last_direction, list_of_entities)
 
+    def decrease_brightness(self, list_of_entities):
+        """Decrease the brightness of the specified light entities."""
+        key = "[ " + ", ".join(list_of_entities) + " ]"
+        direction = BRIGHTNESS_DIRECTION_DOWN
+        self.last_brightness_direction[key] = direction
+        self.brightness_change(direction, list_of_entities)
+
+    def increase_brightness(self, list_of_entities):
+        """Increase the brightness of the specified light entities."""
+        key = "[ " + ", ".join(list_of_entities) + " ]"
+        direction = BRIGHTNESS_DIRECTION_UP
+        self.last_brightness_direction[key] = direction
+        self.brightness_change(direction, list_of_entities)
+
     def stop_brightness_change(self, list_of_entities):
-        """Dim up the specified entities."""
+        """Stop the brightness change for the specified entities."""
         if list_of_entities != None and len(list_of_entities) > 0:
             for entity in list_of_entities:
                 if entity.startswith('light.'):
@@ -126,12 +192,12 @@ class RemoteControl(hass.Hass):
             last_direction = None 
 
         if last_direction is None:
-            last_direction = "down"
+            last_direction = BRIGHTNESS_DIRECTION_DOWN
 
-        if last_direction == "up":
-            new_direction = "down"
+        if last_direction == BRIGHTNESS_DIRECTION_UP:
+            new_direction = BRIGHTNESS_DIRECTION_DOWN
         else:
-            new_direction = "up"
+            new_direction = BRIGHTNESS_DIRECTION_UP
 
         self.last_brightness_direction[key] = new_direction
         self.brightness_change(new_direction, list_of_entities)
@@ -146,121 +212,54 @@ class RemoteControl(hass.Hass):
             last_direction = None 
 
         if last_direction is None:
-            last_direction = "down"
+            last_direction = BRIGHTNESS_DIRECTION_DOWN
 
-        if last_direction == "up":
-            new_direction = "down"
+        if last_direction == BRIGHTNESS_DIRECTION_UP:
+            new_direction = BRIGHTNESS_DIRECTION_DOWN
         else:
-            new_direction = "up"
+            new_direction = BRIGHTNESS_DIRECTION_UP
 
         self.last_brightness_direction[key] = new_direction
-
-
-### Support methods ###
-
-    def safe_click_entites(self, button_id):
-        """Safely return the click entities for the given button id.
-
-        If no entities are defined for the button id an empty list is returned.
-        """
-        if button_id in self.click:
-            return self.click[button_id]
-        else:
-            return []
-
-    def safe_hold_to_dim_entities(self, button_id):
-        """Safely return the hold to dim entities for the given button id.
-
-        If no entities are defined for the button id an empty list is returned.
-        """
-        if button_id in self.hold_to_dim:
-            return self.hold_to_dim[button_id]
-        else:
-            return []
 
 ### Handle the various button press types ###
 
     def handle_button_long_press(self, button_id):
-        """Handle long press for the given button id."""
-        raise NotImplementedError
+        """Handle long press for the given button id.
+
+        The switch subclass need to implement this function 
+        to add button long press handling.
+        """
+        pass
 
     def handle_button_long_release(self, button_id):
-        """Handle long release for the given button id."""
-        raise NotImplementedError
+        """Handle long release for the given button id.
+
+        The switch subclass need to implement this function 
+        to add button long release handling.
+        """
+        pass
 
     def handle_button_click(self, button_id):
-        """Handle click for the given button id."""
-        raise NotImplementedError
+        """Handle click for the given button id.
+
+        The switch subclass need to implement this function 
+        to add button click handling.
+        """
+        pass
 
     def handle_button_double_click(self, button_id):
-        """Handle double click for the given button id."""
-        raise NotImplementedError
-
-    def handle_button_tripple_click(self, button_id):
-        """Handle tripple click for the given button id."""
-        raise NotImplementedError
-
-
-class HueDimmer(RemoteControl):
-    """Control lights on/off, brightness.
-
-    Logics are built around the Hue Dimmer.
-    """
-
-    def handle_button_long_press(self, button_id):
-        self.toggle_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_long_release(self, button_id):
-        self.stop_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_click(self, button_id):
-        self.toggle_entities(self.safe_click_entites(button_id))
-
-    def handle_button_double_click(self, button_id):
+        """Handle double click for the given button id.
+        
+        The switch subclass need to implement this function 
+        to add button double click handling.
+        """
         pass
 
     def handle_button_tripple_click(self, button_id):
+        """Handle tripple click for the given button id.
+        
+        The switch subclass need to implement this function 
+        to add button tripple click handling.
+        """
         pass
 
-class SmartButton(RemoteControl):
-    """Control lights on/off, brightness.
-
-    Logics are built around the Hue Smart Button.
-    """
-
-    def handle_button_long_press(self, button_id):
-        self.continue_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_long_release(self, button_id):
-        self.toggle_brightness_direction(self.safe_hold_to_dim_entities(button_id))
-        self.stop_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_click(self, button_id):
-        self.toggle_entities(self.safe_click_entites(button_id))
-
-    def handle_button_double_click(self, button_id):
-        pass
-
-    def handle_button_tripple_click(self, button_id):
-        pass
-
-class AqaraOpple(RemoteControl):
-    """Control lights on/off, brightness.
-
-    Logics are built around the Aqara Opple switch.
-    """
-
-    def handle_button_long_press(self, button_id):
-        self.toggle_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_long_release(self, button_id):
-        self.stop_brightness_change(self.safe_hold_to_dim_entities(button_id))
-
-    def handle_button_click(self, button_id):
-        self.toggle_entities(self.safe_click_entites(button_id))
-
-    def handle_button_double_click(self, button_id):
-        pass
-
-    def handle_button_tripple_click(self, button_id):
-        pass
